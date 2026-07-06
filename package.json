@@ -1,0 +1,13 @@
+{
+  "type": "module",
+  "name": "b24-processes",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node --test",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "node-cron": "^4.6.0"
+  }
+}
