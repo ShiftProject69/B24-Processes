@@ -4,6 +4,8 @@ module.exports = {
 			name: 'b24-processes',
 			script: 'apps/workflow-recovery/index.js',
 			cwd: __dirname,
+			out_file: '/dev/null',
+			error_file: '/dev/null',
 			instances: 1,
 			exec_mode: 'fork',
 			autorestart: true,
@@ -12,6 +14,18 @@ module.exports = {
 			env: {
 				NODE_ENV: 'production'
 			}
+		},
+		{
+			name: 'fakturownia-sync',
+			script: 'apps/fakturownia-sync/index.js',
+			cwd: __dirname,
+			out_file: '/dev/null',
+			error_file: '/dev/null',
+			instances: 1,
+			exec_mode: 'fork',
+			autorestart: true,
+			stop_exit_codes: [78],
+			env: { NODE_ENV: 'production' }
 		}
 	]
 };
