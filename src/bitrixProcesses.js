@@ -15,7 +15,8 @@ class BitrixProcesses {
 		portalUrl,
 		userId,
 		token,
-		fetchClient = fetch
+		fetchClient = fetch,
+		wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 	}) {
 		if (!portalUrl || !userId || !token) {
 			throw new Error('Bitrix portalUrl, userId and token are required');
@@ -25,6 +26,7 @@ class BitrixProcesses {
 		this.UserId = userId;
 		this.Token = token;
 		this.FetchClient = fetchClient;
+		this.Wait = wait;
 	}
 
 	GetMethodUrl(sMethod) {
@@ -34,6 +36,7 @@ class BitrixProcesses {
 	async DoRequest(sMethod, oPayload = {}) {
 		const oResponse = await this.FetchClient(this.GetMethodUrl(sMethod), {
 			method: 'POST',
+			signal: AbortSignal.timeout(60000),
 			headers: {
 				'Content-Type': 'application/json'
 			},
@@ -42,7 +45,10 @@ class BitrixProcesses {
 
 		const oData = await oResponse.json();
 		if (!oResponse.ok || oData.error) {
-			throw new Error(oData.error_description || oData.error || `Bitrix request failed: ${oResponse.status}`);
+			const error = new Error(oData.error_description || oData.error || `Bitrix request failed: ${oResponse.status}`);
+			error.code = oData.error;
+			error.status = oResponse.status;
+			throw error;
 		}
 
 		return oData;
@@ -56,7 +62,7 @@ class BitrixProcesses {
 		const nStuckMinutes = Number(oOptions.stuckMinutes ?? 5);
 		const oNow = oOptions.now ? new Date(oOptions.now) : new Date();
 
-		if (!Number.isFinite(nStuckMinutes) || Number.isNaN(oNow.getTime())) {
+		if (!Number.isFinite(nStuckMinutes) || nStuckMinutes < 0 || Number.isNaN(oNow.getTime())) {
 			throw new Error('Invalid stuck workflow time options');
 		}
 
@@ -146,7 +152,7 @@ class BitrixProcesses {
 			return oResult.items;
 		}
 
-		return [];
+		throw new Error('Unexpected workflow list response');
 	}
 
 	async GetStuckBizprocWorkflows(oOptions = {}) {
@@ -155,6 +161,10 @@ class BitrixProcesses {
 			...(oOptions.filter || {}),
 			'<OWNED_UNTIL': sLockedBefore
 		};
+		return this.ListWorkflows(oFilter, oOptions);
+	}
+
+	async ListWorkflows(oFilter, oOptions = {}) {
 		const oPayload = {
 			SELECT: oOptions.select || DEFAULT_BIZPROC_SELECT,
 			FILTER: oFilter,
@@ -177,16 +187,17 @@ class BitrixProcesses {
 		return aWorkflows;
 	}
 
-	async TerminateBizprocWorkflow(sWorkflowId) {
+	async TerminateBizprocWorkflow(sWorkflowId, status) {
 		if (!sWorkflowId) {
 			return false;
 		}
 
 		const oResponse = await this.DoRequest('bizproc.workflow.terminate', {
-			ID: sWorkflowId
+			ID: sWorkflowId,
+			STATUS: status
 		});
 
-		return oResponse.result ?? true;
+		return oResponse.result;
 	}
 
 	async StartBizprocWorkflow(mTemplateId, aDocumentId, oParameters = {}) {
@@ -200,102 +211,138 @@ class BitrixProcesses {
 			PARAMETERS: oParameters
 		});
 
-		return oResponse.result ?? true;
+		return oResponse.result;
 	}
 
-	async RestartStuckBizprocWorkflows(oOptions = {}) {
-		const bDryRun = oOptions.dryRun !== false;
-		const oFilter = { ...(oOptions.filter || {}) };
-		const sLockedBefore = this.GetBizprocLockedBefore(oOptions);
+	GetLockTime(row) {
+		return Date.parse(this.GetBizprocWorkflowField(row, ['OWNED_UNTIL']));
+	}
 
-		const aWorkflows = await this.GetStuckBizprocWorkflows({
-			...oOptions,
-			lockedBefore: sLockedBefore,
-			filter: oFilter
+	async TemplateParameters(templateId) {
+		const response = await this.DoRequest('bizproc.workflow.template.list', {
+			SELECT: ['ID', 'PARAMETERS'], FILTER: { ID: templateId }
 		});
+		const template = response.result?.find(item => String(item.ID) === String(templateId));
+		if (!template || !template.PARAMETERS || typeof template.PARAMETERS !== 'object') {
+			throw new Error('Template parameters unavailable');
+		}
+		return template.PARAMETERS;
+	}
 
-		const oReport = {
-			dryRun: bDryRun,
-			lockedBefore: sLockedBefore,
-			total: aWorkflows.length,
-			planned: [],
-			skipped: [],
-			terminated: [],
-			started: [],
-			errors: []
-		};
+	async MatchingIds(info) {
+		const [moduleId, entity, document] = info.documentId;
+		const rows = await this.ListWorkflows({
+			TEMPLATE_ID: info.templateId, MODULE_ID: moduleId, ENTITY: entity, DOCUMENT_ID: document
+		});
+		return rows.map(row => this.GetBizprocWorkflowInfo(row))
+			.filter(item => String(item.templateId) === String(info.templateId)
+				&& JSON.stringify(item.documentId) === JSON.stringify(info.documentId))
+			.map(item => item.workflowId);
+	}
 
-		for (const oWorkflow of aWorkflows) {
-			const oInfo = this.GetBizprocWorkflowInfo(oWorkflow);
-
-			if (!oInfo.workflowId) {
-				oReport.skipped.push({
-					workflowId: null,
-					crmUrl: oInfo.crmUrl,
-					reason: 'Missing ID'
-				});
-				continue;
-			}
-
-			if (!oInfo.templateId) {
-				oReport.skipped.push({
-					workflowId: oInfo.workflowId,
-					crmUrl: oInfo.crmUrl,
-					reason: 'Missing TEMPLATE_ID'
-				});
-				continue;
-			}
-
-			if (!oInfo.documentId) {
-				oReport.skipped.push({
-					workflowId: oInfo.workflowId,
-					crmUrl: null,
-					reason: 'Missing DOCUMENT_ID'
-				});
-				continue;
-			}
-
-			oReport.planned.push(oInfo);
-
-			if (bDryRun) {
-				continue;
-			}
-
+	async StartAndVerify(info, parameters, baseline, report) {
+		let failure;
+		for (let attempt = 0; attempt < 2; attempt++) {
 			try {
-				const mTerminateResult = await this.TerminateBizprocWorkflow(oInfo.workflowId);
-				if (mTerminateResult === false) {
-					throw new Error('bizproc.workflow.terminate returned false');
+				const id = await this.StartBizprocWorkflow(info.templateId, info.documentId, parameters);
+				if (typeof id !== 'string' || !id.trim() || id === info.workflowId) {
+					throw new Error('Start response missing new ID');
 				}
-
-				oReport.terminated.push(oInfo.workflowId);
-
-				const mStartedWorkflowId = await this.StartBizprocWorkflow(
-					oInfo.templateId,
-					oInfo.documentId,
-					oOptions.parameters || {}
-				);
-				if (mStartedWorkflowId === false) {
-					throw new Error('bizproc.workflow.start returned false');
+				report.started.push({ ...info, sourceWorkflowId: info.workflowId, workflowId: id });
+				return;
+			} catch (error) {
+				if (error.code === 'QUERY_LIMIT_EXCEEDED' && attempt === 0) {
+					await this.Wait(5000);
+					continue;
 				}
-
-				oReport.started.push({
-					sourceWorkflowId: oInfo.workflowId,
-					workflowId: mStartedWorkflowId,
-					templateId: oInfo.templateId,
-					documentId: oInfo.documentId,
-					crmUrl: oInfo.crmUrl
-				});
-			}
-			catch (err) {
-				oReport.errors.push({
-					workflowId: oInfo.workflowId,
-					crmUrl: oInfo.crmUrl,
-					message: err.message
-				});
+				if (error.code && error.status < 500 && error.code !== 'ERROR_UNEXPECTED_ANSWER') throw error;
+				failure = error;
+				break;
 			}
 		}
 
-		return oReport;
+		for (const delay of [5000, 15000]) {
+			await this.Wait(delay);
+			try {
+				const ids = await this.MatchingIds(info);
+				const added = ids.filter(id => id && !baseline.has(id));
+				if (added.length) {
+					report.observed.push({ ...info, activeIds: added });
+					return;
+				}
+			} catch (error) {
+				failure = error;
+			}
+		}
+		throw new Error('Start unconfirmed: ' + failure.message);
+	}
+
+	async RestartStuckBizprocWorkflows(options = {}) {
+		const dryRun = options.dryRun !== false;
+		const lockedBefore = this.GetBizprocLockedBefore(options);
+		const candidates = await this.GetStuckBizprocWorkflows({ ...options, lockedBefore });
+		const report = {
+			dryRun, lockedBefore, total: 0, planned: [], skipped: [],
+			terminated: [], started: [], observed: [], errors: []
+		};
+		const seen = new Set();
+		const templates = new Map();
+		const parameters = options.parameters || {};
+
+		for (const row of candidates) {
+			const info = this.GetBizprocWorkflowInfo(row);
+			if (info.workflowId && seen.has(info.workflowId)) continue;
+			seen.add(info.workflowId);
+			report.total++;
+			if (!info.workflowId || !info.templateId || info.documentId?.length !== 3
+				|| !info.documentId.every(Boolean)) {
+				report.skipped.push({ ...info, reason: 'Missing workflow, template or document ID' });
+				continue;
+			}
+			if (!(this.GetLockTime(row) < Date.parse(lockedBefore))) {
+				report.skipped.push({ ...info, reason: 'Missing, invalid or unexpired lock' });
+				continue;
+			}
+			report.planned.push(info);
+			if (dryRun) continue;
+
+			let stage = 'preflight';
+			try {
+				if (!templates.has(info.templateId)) {
+					templates.set(info.templateId, this.TemplateParameters(info.templateId));
+				}
+				const definitions = await templates.get(info.templateId);
+				const missing = Object.entries(definitions).find(([name, definition]) =>
+					['Y', true, 1, '1'].includes(definition.Required ?? definition.REQUIRED)
+					&& (parameters[name] == null || parameters[name] === ''));
+				if (missing) throw new Error('Missing required parameter: ' + missing[0]);
+
+				const baseline = new Set(await this.MatchingIds(info));
+				const byId = { ID: info.workflowId };
+				const current = (await this.ListWorkflows(byId)).find(item =>
+					this.GetBizprocWorkflowField(item, ['ID']) === info.workflowId);
+				const lock = this.GetLockTime(current);
+				if (!(lock < Date.parse(this.GetBizprocLockedBefore(options)))) {
+					report.skipped.push({ ...info, reason: 'Workflow disappeared or lock no longer stale' });
+					continue;
+				}
+
+				stage = 'terminate';
+				const status = 'Автоматическая остановка для восстановления. Блокировка истекла '
+					+ new Date(lock).toISOString() + ', порог просрочки ' + (options.stuckMinutes ?? 5) + ' мин.';
+				if (await this.TerminateBizprocWorkflow(info.workflowId, status) !== true) {
+					throw new Error('Termination not confirmed');
+				}
+				report.terminated.push(info.workflowId);
+				if ((await this.ListWorkflows(byId)).length) throw new Error('Old workflow still active');
+
+				stage = 'start';
+				await this.StartAndVerify(info, parameters, baseline, report);
+			} catch (error) {
+				report.errors.push({ ...info, stage, message: error.message });
+			}
+		}
+		return report;
 	}
 }
 

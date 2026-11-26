@@ -29,6 +29,6 @@ GET /health
 
 ## Scheduled job
 
-Stuck Bitrix24 business-process workflows are restarted daily at 04:00 in the `Europe/Warsaw` timezone.
+Stuck Bitrix24 business-process workflows are restarted daily at 08:00 and 18:00 in the `Europe/Warsaw` timezone.
 
 Workflow is treated as stuck when `OWNED_UNTIL` is older than current time by more than `BITRIX_STUCK_MINUTES` minutes. Default is `5`.
