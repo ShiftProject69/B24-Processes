@@ -3,7 +3,7 @@ import { registryConfig } from './registry-config.js';
 export const FIELD_TYPES = {
 	company: 'crm', kind: 'enumeration', buyer: 'string', nip: 'string', issued: 'date', due: 'date',
 	status: 'enumeration', overdue: 'boolean', gross: 'money', paid: 'money',
-	balance: 'money', pdfUrl: 'url', bases: 'crm', derived: 'crm'
+	balance: 'money', pdfUrl: 'url', bases: 'crm', derived: 'crm', syncedAt: 'datetime'
 };
 
 function required(env, name) {

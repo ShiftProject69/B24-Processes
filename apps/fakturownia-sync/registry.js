@@ -6,7 +6,7 @@ export class Registry {
 	constructor(bitrix, config) {
 		this.bitrix = bitrix;
 		this.config = config;
-		this.select = ['id', 'xmlId', 'title', ...Object.values(config.fields)];
+		this.select = ['id', 'xmlId', 'title', 'assignedById', ...Object.values(config.fields)];
 	}
 
 	async call(method, payload) {
@@ -28,6 +28,10 @@ export class Registry {
 		const response = await this.call('crm.item.fields', { entityTypeId });
 		const actual = response.result?.fields;
 		if (!actual?.xmlId) throw new Error('Missing invoice xmlId');
+		const assignee = actual.assignedById;
+		if (assignee?.type !== 'user' || assignee.isReadOnly || assignee.isImmutable || assignee.isMultiple) {
+			throw new Error('Check write access for invoice assignedById');
+		}
 		for (const [key, type] of Object.entries(FIELD_TYPES)) {
 			const relation = key === 'bases' || key === 'derived';
 			const field = actual[fields[key]];
@@ -45,7 +49,7 @@ export class Registry {
 			}
 		}
 		const company = await this.call('crm.item.fields', { entityTypeId: 176 });
-		for (const code of [CLIENT_ID, TAX_ID]) {
+		for (const code of [CLIENT_ID, TAX_ID, 'assignedById']) {
 			if (!company.result?.fields?.[code]) throw new Error('Missing Companies field ' + code);
 		}
 	}
@@ -66,7 +70,7 @@ export class Registry {
 	}
 
 	companies() {
-		return this.list(176, ['id', CLIENT_ID, TAX_ID]);
+		return this.list(176, ['id', CLIENT_ID, TAX_ID, 'assignedById']);
 	}
 
 	cards(filter) {

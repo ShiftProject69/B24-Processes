@@ -22,7 +22,7 @@ function fixture(linkMode = 'crm') {
 	const options = { ...config, linkMode };
 	const state = { invoices: [invoice(1, 'proforma'), invoice(2), invoice(3)], companies: [],
 		items: [], writes: [], pdfRequests: [], edges: [[1, 2]] };
-	const metadata = { xmlId: {} };
+	const metadata = { xmlId: {}, assignedById: { type: 'user' } };
 	for (const [name, type] of Object.entries(FIELD_TYPES)) {
 		const relation = ['bases', 'derived'].includes(name);
 		metadata[fields[name]] = { type: relation ? linkMode : type, isMultiple: relation };
@@ -34,12 +34,13 @@ function fixture(linkMode = 'crm') {
 	const bitrix = new BitrixClient({ portalUrl: 'https://crm.invalid', userId: '1', token: 'dummy',
 		async fetchClient(url, init) {
 			const method = new URL(url).pathname.split('/').at(-1);
-			const { entityTypeId, fields: patch, id, filter, start } = JSON.parse(init.body);
+			const { entityTypeId, fields: patch, id, filter, start, select } = JSON.parse(init.body);
 			if (method === 'crm.item.fields') {
-				const defs = entityTypeId === 176 ? { [CLIENT_ID]: {}, [TAX_ID]: {} } : metadata;
+				const defs = entityTypeId === 176 ? { [CLIENT_ID]: {}, [TAX_ID]: {}, assignedById: { type: 'user' } } : metadata;
 				return Response.json({ result: { fields: defs } });
 			}
 			if (method === 'crm.item.list') {
+				assert.ok(select.includes('assignedById'));
 				let rows = entityTypeId === 176 ? state.companies : state.items;
 				if (filter['=xmlId']) rows = rows.filter(item => item.xmlId === filter['=xmlId']);
 				return Response.json({ result: { items: rows.slice(start, start + 2) },
@@ -122,6 +123,29 @@ for (const mode of ['crm', 'url']) {
 		assert.equal(state.items.length, 3);
 	});
 }
+
+test('refresh timestamp advances for selected invoices and freezes when they disappear', async () => {
+	const { sync, state } = fixture();
+	const first = '2026-05-01T07:00:00Z';
+	const second = '2026-05-01T12:00:00Z';
+	const third = '2026-05-02T07:00:00Z';
+	await sync.run(new Date(first));
+	const stamp = item => item[fields.syncedAt];
+	assert.deepEqual(state.items.map(stamp), [first, first, first]);
+	state.invoices.pop();
+	const partial = await sync.run(new Date(second), { limit: 1 });
+	assert.deepEqual(partial.missing, []);
+	assert.deepEqual(state.items.map(stamp), [second, first, first]);
+	const full = await sync.run(new Date(third));
+	assert.equal(full.updated, 0);
+	assert.deepEqual(full.missing, ['3']);
+	assert.deepEqual(state.items.map(stamp), [third, third, first]);
+	state.invoices.push(invoice(3));
+	const restored = await sync.run(new Date('2026-05-02T12:00:00Z'));
+	assert.equal(restored.created, 0);
+	assert.deepEqual(restored.missing, []);
+	assert.equal(stamp(state.items[2]), '2026-05-02T12:00:00Z');
+});
 
 test('uses detail metadata when the list omits the public token and rejects the account secret', async () => {
 	let detail = { id: 8, token: 'public-eight' };
@@ -239,7 +263,7 @@ test('incomplete configuration or wrong portal fields prevent writes', async () 
 
 test('matches a unique customer, rejects conflicting or ambiguous evidence', () => {
 	const row = (id, client, tax) => ({ id, [CLIENT_ID]: client, [TAX_ID]: tax });
-	const check = rows => companyMatcher(rows)(invoice(1));
+	const check = rows => companyMatcher(rows)(invoice(1))?.id ?? 0;
 	assert.equal(check([row(1, 22, '')]), 1);
 	assert.equal(check([row(1, '', 'pl00123')]), 1);
 	assert.equal(check([row(1, 23, 'PL00123')]), 0);
@@ -261,6 +285,43 @@ test('clears the custom company binding when the next reconciliation finds a con
 	assert.equal(card[fields.company], '');
 	assert.equal(card[fields.buyer], 'Buyer');
 	assert.ok(!Object.hasOwn(card, 'parentId176'));
+});
+
+test('inherits company owner by NIP on creation and reapplies the current owner within the run limit', async () => {
+	const { sync, state } = fixture();
+	state.companies = [{ id: 42, [TAX_ID]: 'PL00123', assignedById: '7' }];
+	state.loseAdd = true;
+	const now = new Date('2026-05-01T07:00:00Z');
+	assert.deepEqual((await sync.run(now)).errors, []);
+	assert.deepEqual(state.items.map(card => card.assignedById), [7, 7, 7]);
+	state.companies[0].assignedById = 12;
+	const limited = await sync.run(now, { limit: 1 });
+	assert.equal(limited.updated, 1);
+	assert.deepEqual(state.items.map(card => card.assignedById), [12, 7, 7]);
+	state.items[0].assignedById = 99;
+	assert.equal((await sync.run(now)).updated, 3);
+	assert.deepEqual(state.items.map(card => card.assignedById), [12, 12, 12]);
+	state.items[0].assignedById = '12';
+	const writes = state.writes.length;
+	assert.equal((await sync.run(now)).updated, 0);
+	assert.equal(state.writes.length, writes);
+});
+
+test('retains manual owners and leaves the default on creation when a company or its owner is unavailable', async () => {
+	const { sync, state } = fixture();
+	assert.deepEqual((await sync.run()).errors, []);
+	assert.ok(state.items.every(card => !Object.hasOwn(card, 'assignedById')));
+	state.items[0].assignedById = 17;
+	const company = { id: 42, [CLIENT_ID]: 22, assignedById: 0 };
+	state.companies = [company];
+	await sync.run();
+	assert.equal(state.items[0][fields.company], '42');
+	assert.equal(state.items[0].assignedById, 17);
+	company.assignedById = 7;
+	state.companies.push({ ...company, id: 43 });
+	const ambiguous = await sync.run();
+	assert.equal(ambiguous.unlinked, 3);
+	assert.equal(state.items[0].assignedById, 17);
 });
 
 test('backs off after a source read is rate limited', async () => {

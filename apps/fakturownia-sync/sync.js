@@ -33,7 +33,9 @@ export class InvoiceSync {
 				if (Object.keys(pending).length) saved = await this.registry.save(saved.id, pending);
 			}
 		}
-		return { card: { ...card, ...saved }, action: card ? 'updated' : 'created' };
+		const dataChanged = Object.keys(patch).some(key => key !== this.config.fields.syncedAt);
+		const action = card ? (dataChanged ? 'updated' : 'refreshed') : 'created';
+		return { card: { ...card, ...saved }, action };
 	}
 
 	async writeLinks(documents, olderIds, cards, changed, created, report, selected) {
@@ -111,6 +113,8 @@ export class InvoiceSync {
 		if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) throw new Error('Invalid sync limit');
 		const prefix = 'fakturownia:' + this.config.account + ':';
 		const today = localDate.format(now);
+		// Bitrix datetime fields have second precision. Use one instant for the whole run.
+		const syncedAt = now.toISOString().replace(/\.\d{3}Z$/, 'Z');
 		const created = new Set();
 		const changed = new Set();
 		const report = { startedAt: now.toISOString(), created: 0, updated: 0, unlinked: 0, missing: [], linkReview: [], errors: [] };
@@ -160,6 +164,7 @@ export class InvoiceSync {
 					const fields = invoiceFields(invoice, company, today, this.config);
 					const pdfUrl = await this.source.pdfUrl(invoice);
 					fields[this.config.fields.pdfUrl] = pdfUrl;
+					if (pdfUrl) fields[this.config.fields.syncedAt] = syncedAt;
 					if (!pdfUrl) report.errors.push({ stage: 'pdf_link', id, message: 'No document sharing token' });
 					const xmlId = prefix + id;
 					const card = cards.get(id) ?? await this.registry.find(xmlId);

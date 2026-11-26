@@ -23,13 +23,13 @@ export function companyMatcher(companies) {
 		const matches = byClient.get(client);
 		if (matches) {
 			const candidateTax = nip(matches[0][TAX_ID]);
-			if (matches.length !== 1 || (tax && candidateTax && candidateTax !== tax)) return 0;
-			return matches[0].id;
+			if (matches.length !== 1 || (tax && candidateTax && candidateTax !== tax)) return null;
+			return matches[0];
 		}
 		const candidates = byNip.get(tax);
-		if (candidates?.length !== 1) return 0;
+		if (candidates?.length !== 1) return null;
 		const otherId = String(candidates[0][CLIENT_ID] ?? '').trim();
-		return client && otherId && otherId !== client ? 0 : candidates[0].id;
+		return client && otherId && otherId !== client ? null : candidates[0];
 	};
 }
 
@@ -73,19 +73,23 @@ export function invoiceFields(invoice, company, today, config) {
 	const due = invoiceDate(invoice.payment_to);
 	const active = !['paid', 'rejected', 'cancelled'].includes(status);
 	const money = value => value + '|' + invoice.currency;
-	return {
-		title: String(invoice.number), [f.company]: company ? String(company) : '',
+	const fields = {
+		title: String(invoice.number), [f.company]: company ? String(company.id) : '',
 		[f.kind]: kinds[invoice.kind], [f.buyer]: invoice.buyer_name ?? '', [f.nip]: invoice.buyer_tax_no ?? '',
 		[f.issued]: invoiceDate(invoice.issue_date), [f.due]: due, [f.status]: statuses[status],
 		[f.overdue]: active && due && due < today && balance !== '0' ? 1 : 0,
 		[f.gross]: money(gross), [f.paid]: money(paid), [f.balance]: money(balance)
 	};
+	const assignee = Number(company?.assignedById);
+	if (Number.isSafeInteger(assignee) && assignee > 0) fields.assignedById = assignee;
+	return fields;
 }
 
 export function changes(card, fields, f) {
 	const result = {};
 	for (const [key, value] of Object.entries(fields)) {
 		let current = card[key] ?? '';
+		if (key === f.syncedAt && Date.parse(current) === Date.parse(value)) continue;
 		if (key === f.issued || key === f.due) current = String(current).slice(0, 10);
 		if (key === f.overdue) current = ['1', 1, 'Y', true].includes(current) ? 1 : 0;
 		if (key === f.company && [0, '0', false].includes(current)) current = '';

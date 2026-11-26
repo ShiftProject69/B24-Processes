@@ -16,7 +16,8 @@ export const registryConfig = {
 		balance: 'ufCrm353FsBalance',
 		pdfUrl: 'ufCrm353FsPdfUrl',
 		bases: 'ufCrm353FsBases',
-		derived: 'ufCrm353FsDerived'
+		derived: 'ufCrm353FsDerived',
+		syncedAt: 'ufCrm353FsSyncedAt'
 	},
 	kinds: {
 		proforma: 10289,
