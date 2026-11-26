@@ -11,47 +11,9 @@ const DEFAULT_BIZPROC_SELECT = [
 ];
 
 class BitrixProcesses {
-	constructor({
-		portalUrl,
-		userId,
-		token,
-		fetchClient = fetch,
-		wait = ms => new Promise(resolve => setTimeout(resolve, ms))
-	}) {
-		if (!portalUrl || !userId || !token) {
-			throw new Error('Bitrix portalUrl, userId and token are required');
-		}
-
-		this.PortalUrl = portalUrl.replace(/\/+$/, '');
-		this.UserId = userId;
-		this.Token = token;
-		this.FetchClient = fetchClient;
+	constructor(bitrix, wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+		this.Bitrix = bitrix;
 		this.Wait = wait;
-	}
-
-	GetMethodUrl(sMethod) {
-		return `${this.PortalUrl}/rest/${this.UserId}/${this.Token}/${sMethod}`;
-	}
-
-	async DoRequest(sMethod, oPayload = {}) {
-		const oResponse = await this.FetchClient(this.GetMethodUrl(sMethod), {
-			method: 'POST',
-			signal: AbortSignal.timeout(60000),
-			headers: {
-				'Content-Type': 'application/json'
-			},
-			body: JSON.stringify(oPayload)
-		});
-
-		const oData = await oResponse.json();
-		if (!oResponse.ok || oData.error) {
-			const error = new Error(oData.error_description || oData.error || `Bitrix request failed: ${oResponse.status}`);
-			error.code = oData.error;
-			error.status = oResponse.status;
-			throw error;
-		}
-
-		return oData;
 	}
 
 	GetBizprocLockedBefore(oOptions = {}) {
@@ -114,19 +76,19 @@ class BitrixProcesses {
 		}
 
 		let aMatch = sDocumentId.match(/^DEAL_(\d+)$/);
-		if (aMatch) return `${this.PortalUrl}/crm/deal/details/${aMatch[1]}/`;
+		if (aMatch) return `${this.Bitrix.PortalUrl}/crm/deal/details/${aMatch[1]}/`;
 
 		aMatch = sDocumentId.match(/^CONTACT_(\d+)$/);
-		if (aMatch) return `${this.PortalUrl}/crm/contact/details/${aMatch[1]}/`;
+		if (aMatch) return `${this.Bitrix.PortalUrl}/crm/contact/details/${aMatch[1]}/`;
 
 		aMatch = sDocumentId.match(/^COMPANY_(\d+)$/);
-		if (aMatch) return `${this.PortalUrl}/crm/company/details/${aMatch[1]}/`;
+		if (aMatch) return `${this.Bitrix.PortalUrl}/crm/company/details/${aMatch[1]}/`;
 
 		aMatch = sDocumentId.match(/^LEAD_(\d+)$/);
-		if (aMatch) return `${this.PortalUrl}/crm/lead/details/${aMatch[1]}/`;
+		if (aMatch) return `${this.Bitrix.PortalUrl}/crm/lead/details/${aMatch[1]}/`;
 
 		aMatch = sDocumentId.match(/^DYNAMIC_(\d+)_(\d+)$/);
-		if (aMatch) return `${this.PortalUrl}/crm/type/${aMatch[1]}/details/${aMatch[2]}/`;
+		if (aMatch) return `${this.Bitrix.PortalUrl}/crm/type/${aMatch[1]}/details/${aMatch[2]}/`;
 
 		return null;
 	}
@@ -175,7 +137,7 @@ class BitrixProcesses {
 		let aWorkflows = [];
 
 		while (nStart !== undefined && nStart !== null) {
-			const oResponse = await this.DoRequest('bizproc.workflow.instances', {
+			const oResponse = await this.Bitrix.DoRequest('bizproc.workflow.instances', {
 				...oPayload,
 				start: nStart
 			});
@@ -192,7 +154,7 @@ class BitrixProcesses {
 			return false;
 		}
 
-		const oResponse = await this.DoRequest('bizproc.workflow.terminate', {
+		const oResponse = await this.Bitrix.DoRequest('bizproc.workflow.terminate', {
 			ID: sWorkflowId,
 			STATUS: status
 		});
@@ -205,7 +167,7 @@ class BitrixProcesses {
 			return false;
 		}
 
-		const oResponse = await this.DoRequest('bizproc.workflow.start', {
+		const oResponse = await this.Bitrix.DoRequest('bizproc.workflow.start', {
 			TEMPLATE_ID: mTemplateId,
 			DOCUMENT_ID: aDocumentId,
 			PARAMETERS: oParameters
@@ -219,7 +181,7 @@ class BitrixProcesses {
 	}
 
 	async TemplateParameters(templateId) {
-		const response = await this.DoRequest('bizproc.workflow.template.list', {
+		const response = await this.Bitrix.DoRequest('bizproc.workflow.template.list', {
 			SELECT: ['ID', 'PARAMETERS'], FILTER: { ID: templateId }
 		});
 		const template = response.result?.find(item => String(item.ID) === String(templateId));

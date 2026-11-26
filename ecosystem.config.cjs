@@ -2,7 +2,7 @@ module.exports = {
 	apps: [
 		{
 			name: 'b24-processes',
-			script: 'src/index.js',
+			script: 'apps/workflow-recovery/index.js',
 			cwd: __dirname,
 			instances: 1,
 			exec_mode: 'fork',

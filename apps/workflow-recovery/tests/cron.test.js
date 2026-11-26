@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import Cron from '../src/cron.js';
+import Cron from '../cron.js';
 
 function CreateFakeCron() {
 	const schedules = [];

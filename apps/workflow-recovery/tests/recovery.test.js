@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import BitrixProcesses from '../src/bitrixProcesses.js';
+import BitrixClient from '../../../shared/bitrix/client.js';
+import BitrixProcesses from '../bitrixProcesses.js';
 
 const now = '2026-11-26T09:14:00Z';
 const old = { ID: 'old', TEMPLATE_ID: '42', MODULE_ID: 'crm', ENTITY: 'Deal',
@@ -11,9 +12,8 @@ function scenario(options = {}) {
 	const delays = [];
 	let running = [old];
 	let attempts = 0;
-	const client = new BitrixProcesses({
+	const bitrix = new BitrixClient({
 		portalUrl: 'https://unused.invalid', userId: '1', token: 'dummy',
-		wait: async ms => { delays.push(ms); },
 		async fetchClient(url, init) {
 			const method = url.split('.').pop();
 			const body = JSON.parse(init.body);
@@ -49,7 +49,8 @@ function scenario(options = {}) {
 			return Response.json({ result });
 		}
 	});
-	return { run: () => client.RestartStuckBizprocWorkflows({ now, dryRun: options.dryRun ?? false }),
+	const recovery = new BitrixProcesses(bitrix, async ms => { delays.push(ms); });
+	return { run: () => recovery.RestartStuckBizprocWorkflows({ now, dryRun: options.dryRun ?? false }),
 		calls, delays, attempts: () => attempts };
 }
 

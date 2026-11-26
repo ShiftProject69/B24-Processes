@@ -1,34 +1,34 @@
 # B24-Processes
 
-Server process for Bitrix24 business-process maintenance.
+Внешние приложения для автоматизации Битрикс24. Каждое приложение запускается отдельно и использует общий REST-клиент и один корневой файл настроек.
 
-## Setup
+| Путь | Назначение |
+| --- | --- |
+| `apps/workflow-recovery/` | Восстановление зависших бизнес-процессов, расписание, HTTP-сервер и тесты |
+| `shared/bitrix/client.js` | Вызовы REST по вебхуку Битрикс24 и обработка ответов |
+| `shared/config.js` | Загрузка корневого `.env` и чтение настроек подключения к Битрикс24 |
+| `ecosystem.config.cjs` | Конфигурация процессов PM2 |
 
-Create `.env` from `.env.example`. The project loads it with `dotenv`.
+## Настройка
 
-```env
-BITRIX_PORTAL_URL=https://glas.bitrix24.eu
-BITRIX_USER_ID=1
-BITRIX_TOKEN=your_webhook_token
-PORT=3000
-```
+Требуется Node.js 20 или новее. Установите зависимости командой `npm ci` из корня проекта. При первой настройке скопируйте `.env.example` в `.env` и укажите параметры вебхука. Приложение найдёт файл независимо от рабочего каталога. Переменные, уже заданные в окружении процесса, имеют приоритет.
 
-## Commands
+| Переменная | Назначение | По умолчанию |
+| --- | --- | --- |
+| `BITRIX_PORTAL_URL` | Базовый URL портала | Обязательна |
+| `BITRIX_USER_ID` | ID пользователя вебхука | `1` |
+| `BITRIX_TOKEN` | Токен вебхука | Обязательна |
+| `PORT` | HTTP-порт приложения восстановления | `3000` |
+| `BITRIX_STUCK_MINUTES` | Сколько минут должно пройти после истечения блокировки | `5` |
 
-Start the server and register the scheduled job:
+## Восстановление бизнес-процессов
 
-```bash
-npm start
-```
+Запустите приложение командой `npm start` или `npm run start:workflow-recovery`. Для запуска под PM2 используйте `pm2 start ecosystem.config.cjs --only b24-processes`. Выберите один способ запуска, чтобы на портале работал один экземпляр задачи.
 
-Health check:
+Приложение проверяет процессы ежедневно в **08:00 и 18:00** по времени `Europe/Warsaw`. Кандидат на восстановление — процесс, у которого с момента `OWNED_UNTIL` прошло больше `BITRIX_STUCK_MINUTES` минут. Перед остановкой приложение повторно проверяет блокировку. Если Битрикс24 подтвердил остановку и прежний экземпляр исчез из списка активных, приложение запускает процесс по исходному шаблону на том же документе.
 
-```bash
-GET /health
-```
+Проверить работу HTTP-сервера при стандартном порте можно командой `curl http://localhost:3000/health`. Ожидаемый ответ — HTTP 200 и `{"ok":true}`.
 
-## Scheduled job
+## Тесты
 
-Stuck Bitrix24 business-process workflows are restarted daily at 08:00 and 18:00 in the `Europe/Warsaw` timezone.
-
-Workflow is treated as stuck when `OWNED_UNTIL` is older than current time by more than `BITRIX_STUCK_MINUTES` minutes. Default is `5`.
+Запустите `npm test` из корня проекта. Тесты используют подставной транспорт Битрикс24 и проверяют восстановление, расписание и HTTP-маршрут.
