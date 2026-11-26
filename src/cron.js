@@ -17,21 +17,6 @@ class Cron {
 		this.StuckMinutes = stuckMinutes;
 	}
 
-	ScheduleExRatesUpdate() {
-		return this.Cron.schedule('0 1 * * *', async () => {
-			console.log('Обновление Exchange Rates в Bitrix24...');
-			try {
-				await this.Bitrix.UpdatePlnExchangeRates(new Date());
-				console.log('Обновление Exchange Rates в Bitrix24 выполнено успешно');
-			}
-			catch (error) {
-				console.error('Обновление Exchange Rates в Bitrix24 провалилось:', error);
-			}
-		}, {
-			timezone: POLAND_TIMEZONE
-		});
-	}
-
 	ScheduleRestartStuckBizprocWorkflows() {
 		return this.Cron.schedule('0 4 * * *', async () => {
 			console.log('Перезапуск зависших бизнес-процессов в Bitrix24...');
@@ -51,10 +36,7 @@ class Cron {
 	}
 
 	ScheduleAll() {
-		return [
-			this.ScheduleExRatesUpdate(),
-			this.ScheduleRestartStuckBizprocWorkflows()
-		];
+		return [this.ScheduleRestartStuckBizprocWorkflows()];
 	}
 }
 

@@ -1,5 +1,3 @@
-import { AddUtcDays, FormatDate, IsTodayDate } from './utils.js';
-
 const DEFAULT_BIZPROC_SELECT = [
 	'ID',
 	'MODIFIED',
@@ -11,21 +9,6 @@ const DEFAULT_BIZPROC_SELECT = [
 	'STARTED_BY',
 	'TEMPLATE_ID'
 ];
-
-const EX_RATES_ENTITY_TYPE_ID = 1040;
-const PLN_LIST_ITEM_ID = 5783;
-const EX_RATE_FIELDS = {
-	date: 'ufCrm189_1727150456178',
-	rateDate: 'ufCrm189_1727150835594',
-	baseCurrency: 'ufCrm189_1727150515411',
-	USD: 'ufCrm189_1727150548410',
-	EUR: 'ufCrm189_1727150556960',
-	GBP: 'ufCrm189_1727150566069',
-	UAH: 'ufCrm189_1727150713617',
-	SEK: 'ufCrm189_1727150734145'
-};
-const NBP_CURRENCIES = ['USD', 'EUR', 'GBP', 'UAH', 'SEK'];
-const BITRIX_CURRENCIES_TO_UPDATE = ['USD', 'PLN', 'GBP'];
 
 class BitrixProcesses {
 	constructor({
@@ -63,137 +46,6 @@ class BitrixProcesses {
 		}
 
 		return oData;
-	}
-
-	async GetNbpRateToPln(sCurrency, mDate) {
-		const sDate = typeof mDate === 'string' ? mDate : FormatDate(mDate);
-		const oResponse = await this.FetchClient(
-			`https://api.nbp.pl/api/exchangerates/rates/A/${sCurrency}/${sDate}/`,
-			{
-				headers: {
-					Accept: 'application/json'
-				}
-			}
-		);
-
-		if (oResponse.status === 404) {
-			return this.GetNbpRateToPln(sCurrency, AddUtcDays(new Date(`${sDate}T00:00:00.000Z`), -1));
-		}
-
-		if (!oResponse.ok) {
-			throw new Error(`NBP rate request failed for ${sCurrency} ${sDate}: ${oResponse.status}`);
-		}
-
-		const oData = await oResponse.json();
-		return {
-			rate: oData.rates[0].mid,
-			rateDate: oData.rates[0].effectiveDate
-		};
-	}
-
-	async GetRatesToPln(oDate) {
-		const aRateResults = await Promise.all(
-			NBP_CURRENCIES.map(async sCurrency => {
-				const oRate = await this.GetNbpRateToPln(sCurrency, oDate);
-				return [sCurrency, oRate];
-			})
-		);
-
-		return Object.fromEntries(aRateResults);
-	}
-
-	GetRatesToEur(oRatesToPln) {
-		const nEurToPln = oRatesToPln.EUR?.rate;
-		if (!nEurToPln) {
-			throw new Error('EUR to PLN rate is required to update Bitrix currencies');
-		}
-
-		const oRatesToEur = Object.fromEntries(
-			Object.entries(oRatesToPln).map(([sCurrency, oInfo]) => [
-				sCurrency,
-				oInfo.rate / nEurToPln
-			])
-		);
-		oRatesToEur.PLN = 1 / nEurToPln;
-
-		return oRatesToEur;
-	}
-
-	async UpdateBitrixCurrency(sCurrency, nAmount) {
-		return this.DoRequest('crm.currency.update', {
-			id: sCurrency,
-			fields: {
-				AMOUNT: nAmount
-			}
-		});
-	}
-
-	async UpdatePlnExchangeRates(oDate = new Date(), oOptions = {}) {
-		const oTargetDate = oDate instanceof Date ? oDate : new Date(oDate);
-		if (Number.isNaN(oTargetDate.getTime())) {
-			throw new Error('Invalid exchange rate date');
-		}
-
-		const sCurrentDate = FormatDate(oTargetDate);
-		const oExisting = await this.DoRequest('crm.item.list', {
-			start: 0,
-			filter: {
-				[EX_RATE_FIELDS.date]: sCurrentDate
-			},
-			entityTypeId: EX_RATES_ENTITY_TYPE_ID
-		});
-
-		if (oExisting.result?.items?.length) {
-			return {
-				created: false,
-				reason: 'Exchange rate record already exists',
-				date: sCurrentDate,
-				item: oExisting.result.items[0]
-			};
-		}
-
-		const oRatesToPln = await this.GetRatesToPln(AddUtcDays(oTargetDate, -1));
-		const sRateDate = oRatesToPln.EUR.rateDate;
-
-		const oAddResult = await this.DoRequest('crm.item.add', {
-			entityTypeId: EX_RATES_ENTITY_TYPE_ID,
-			fields: {
-				[EX_RATE_FIELDS.date]: sCurrentDate,
-				[EX_RATE_FIELDS.rateDate]: sRateDate,
-				[EX_RATE_FIELDS.baseCurrency]: PLN_LIST_ITEM_ID,
-				[EX_RATE_FIELDS.USD]: oRatesToPln.USD.rate,
-				[EX_RATE_FIELDS.EUR]: oRatesToPln.EUR.rate,
-				[EX_RATE_FIELDS.GBP]: oRatesToPln.GBP.rate,
-				[EX_RATE_FIELDS.UAH]: oRatesToPln.UAH.rate,
-				[EX_RATE_FIELDS.SEK]: oRatesToPln.SEK.rate
-			}
-		});
-
-		const oReport = {
-			created: true,
-			date: sCurrentDate,
-			rateDate: sRateDate,
-			item: oAddResult.result?.item ?? oAddResult.result,
-			ratesToPln: Object.fromEntries(
-				Object.entries(oRatesToPln).map(([sCurrency, oInfo]) => [sCurrency, oInfo.rate])
-			),
-			updatedCurrencies: []
-		};
-
-		if (oOptions.updateBitrixCurrencies !== false && IsTodayDate(oTargetDate)) {
-			const oRatesToEur = this.GetRatesToEur(oRatesToPln);
-			await Promise.all(
-				BITRIX_CURRENCIES_TO_UPDATE.map(async sCurrency => {
-					await this.UpdateBitrixCurrency(sCurrency, oRatesToEur[sCurrency]);
-					oReport.updatedCurrencies.push({
-						currency: sCurrency,
-						amount: oRatesToEur[sCurrency]
-					});
-				})
-			);
-		}
-
-		return oReport;
 	}
 
 	GetBizprocLockedBefore(oOptions = {}) {

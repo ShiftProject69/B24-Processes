@@ -15,7 +15,7 @@ PORT=3000
 
 ## Commands
 
-Start the server and register cron jobs:
+Start the server and register the scheduled job:
 
 ```bash
 npm start
@@ -27,11 +27,8 @@ Health check:
 GET /health
 ```
 
-## Cron Jobs
+## Scheduled job
 
-All schedules use the `Europe/Warsaw` timezone.
-
-- `0 1 * * *`: update PLN exchange-rate records in Bitrix24.
-- `0 11 * * *`: restart stuck Bitrix24 business-process workflows.
+Stuck Bitrix24 business-process workflows are restarted daily at 04:00 in the `Europe/Warsaw` timezone.
 
 Workflow is treated as stuck when `OWNED_UNTIL` is older than current time by more than `BITRIX_STUCK_MINUTES` minutes. Default is `5`.
